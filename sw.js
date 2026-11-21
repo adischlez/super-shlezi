@@ -1,6 +1,6 @@
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = 'super-shlezi-' + VERSION;
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'logic.js', 'store.js', 'config.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'vendor/html5-qrcode.min.js'];
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'logic.js', 'store.js', 'photo.js', 'config.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'vendor/html5-qrcode.min.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

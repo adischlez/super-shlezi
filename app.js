@@ -1,5 +1,6 @@
 import { DEPARTMENTS, deptById, suggestDept, parseListText, parseReceipt, compareReceipt, nameScore, normalize, seedItems, RECEIPT_EXAMPLE } from './logic.js';
 import { createLocalBackend, createFirebaseBackend, parseFirebaseConfig, readLocal, localKey } from './store.js';
+import { parseListFromImage, downscaleImage, hebrewAiError, remainQuota, DAILY_LIMIT } from './photo.js';
 
 // ---------------- helpers ----------------
 const $ = (s, r = document) => r.querySelector(s);
@@ -217,7 +218,12 @@ function renderList() {
     </form>
     <div id="tripbar" class="tripbar"></div>
     <div id="listBody"></div>
-    <p class="muted" style="text-align:center"><button class="btn ghost small" id="importBtn">ייבוא רשימה מטקסט (למשל מוואטסאפ)</button></p>`;
+    <p class="photo-actions">
+      <button class="btn ghost" type="button" id="photoBtn">📷 רשימה מתמונה</button>
+      <button class="btn ghost" type="button" id="importBtn">ייבוא מטקסט</button>
+    </p>
+    <input id="photoInput" type="file" accept="image/*" hidden>
+    <p class="muted" style="text-align:center;margin-top:0">צלמו דף כתוב בכתב יד, או בחרו תמונה מהגלריה</p>`;
   let deptTouched = false;
   const nameEl = $('#addName'), deptEl = $('#addDept');
   nameEl.addEventListener('input', () => { if (!deptTouched) deptEl.value = suggestDept(nameEl.value); });
@@ -230,6 +236,8 @@ function renderList() {
     nameEl.value = ''; $('#addQty').value = 1; deptTouched = false; deptEl.value = 'other'; nameEl.focus(); updateList();
   });
   $('#importBtn').onclick = openImport;
+  $('#photoBtn').onclick = () => startPhotoImport();
+  $('#photoInput').onchange = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) handlePhotoFile(f); };
   $('#listBody').addEventListener('click', onListClick);
   $('#listBody').addEventListener('change', (e) => {
     const li = e.target.closest('.item'); if (li && e.target.matches('input[type=checkbox]')) updateItem(li.dataset.id, { inCart: e.target.checked, cartBy: userName() });
@@ -291,6 +299,81 @@ function editItem(id) {
     };
   });
 }
+function fallbackHint() {
+  return 'אפשר לייבא את הרשימה כטקסט, או לשלוח את התמונה לקבוצת הוואטסאפ ״סופר שלזי״ והעוזר המשפחתי יתמלל אותה.';
+}
+function showPhotoFallback(title, body) {
+  sheet(`<h2>${esc(title)}</h2><p>${esc(body || fallbackHint())}</p>
+    <div class="actions"><button class="btn" id="fbImp">ייבוא כטקסט</button><button class="btn gray" data-close>סגירה</button></div>`, (s) => {
+    $('#fbImp', s.el).onclick = () => { s.close(); openImport(); };
+  });
+}
+function startPhotoImport() {
+  if (!fbConfig()) return showPhotoFallback('קריאת תמונה דורשת סנכרון משפחתי', 'הפעילו סנכרון משפחתי בהגדרות, או ' + fallbackHint());
+  if (remainQuota() <= 0) return showPhotoFallback(...Object.values(hebrewAiError(null, 'quota')));
+  $('#photoInput').click();
+}
+async function handlePhotoFile(file) {
+  if (!file || !String(file.type || '').startsWith('image/')) return toast('בחרו קובץ תמונה');
+  const loading = sheet(`<h2>קוראים את הרשימה…</h2>
+    <div class="photo-loading"><span class="spinner" aria-hidden="true"></span><p class="muted">מפענחים את כתב היד. זה יכול לקחת כמה שניות.</p></div>
+    <p class="muted" id="photoLoadHint"></p>`, () => {});
+  // no backdrop-close during load
+  loading.el.parentElement.querySelector('.sheet-backdrop').onclick = null;
+  let previewUrl = '';
+  try {
+    const scaled = await downscaleImage(file);
+    previewUrl = scaled.url;
+    const res = await parseListFromImage(scaled.file, fbConfig());
+    loading.close();
+    if (!res.items.length) return showPhotoFallback('לא זיהינו מוצרים בתמונה', 'נסו לצלם שוב באור טוב, או ' + fallbackHint());
+    openPhotoReview(res.items, previewUrl, res.model);
+  } catch (err) {
+    console.error('photo import', err);
+    loading.close();
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    const msg = hebrewAiError(err, err && err.code === 'quota' ? 'quota' : '');
+    showPhotoFallback(msg.title, msg.body);
+  }
+}
+function openPhotoReview(items, previewUrl, modelUsed) {
+  const rows = items.map((it, i) => `
+    <li class="preview-item ${it.unclear ? 'unclear' : ''}" data-i="${i}">
+      <label class="chk"><input type="checkbox" ${it.selected ? 'checked' : ''} aria-label="הוסף את ${esc(it.name)}"><span class="box">✓</span></label>
+      <div class="preview-fields">
+        <input class="p-name" value="${esc(it.name)}" aria-label="שם">
+        <div class="preview-meta">
+          <input class="p-qty" type="number" min="1" max="999" value="${it.qty}" aria-label="כמות">
+          <select class="p-dept" aria-label="מחלקה">${deptOptions(it.dept)}</select>
+        </div>
+        ${it.unclear ? `<small class="warn-note">לא בטוח${it.note ? ': ' + esc(it.note) : ''} — בדקו לפני ההוספה</small>` : ''}
+      </div>
+    </li>`).join('');
+  const sh = sheet(`<h2>בדיקה לפני הוספה</h2>
+    ${previewUrl ? `<img class="photo-thumb" src="${previewUrl}" alt="התמונה שצולמה">` : ''}
+    <p class="muted">סמנו מה להוסיף, ותקנו שם או כמות אם צריך. ${items.filter(i => i.unclear).length ? 'פריטים מסומנים בצהוב לא היו ברורים לגמרי.' : ''}</p>
+    <ul class="preview-list">${rows}</ul>
+    <div class="actions"><button class="btn gray" data-close>ביטול</button><button class="btn" id="photoAdd">הוספה לרשימה</button></div>`, (s) => {
+    s.onclose = () => { if (previewUrl) URL.revokeObjectURL(previewUrl); };
+    $('#photoAdd', s.el).onclick = () => {
+      const chosen = [...s.el.querySelectorAll('.preview-item')].filter(li => li.querySelector('input[type=checkbox]').checked).map(li => ({
+        name: li.querySelector('.p-name').value.trim(),
+        qty: Math.max(1, parseInt(li.querySelector('.p-qty').value, 10) || 1),
+        dept: li.querySelector('.p-dept').value,
+      })).filter(x => x.name);
+      if (!chosen.length) return toast('סמנו לפחות מוצר אחד');
+      let added = 0, merged = 0;
+      chosen.forEach(p => { const r = addItem(p); if (r) { if (r.merged) merged++; else added++; } });
+      s.close(); renderData();
+      const bits = [];
+      if (added) bits.push(added + ' נוספו');
+      if (merged) bits.push(merged + ' עודכנו (כבר היו ברשימה)');
+      toast(bits.join(' · ') || 'לא נוסף כלום');
+    };
+  });
+  return sh;
+}
+
 function openImport() {
   sheet(`<h2>ייבוא רשימה מטקסט</h2>
     <p class="muted">הדביקו רשימה, שורה לכל מוצר. כמות: "קוטג׳ ×5" או "קוטג׳ - 5". מוצרים שכבר ברשימה יתעדכנו ולא יוכפלו.</p>
@@ -651,6 +734,6 @@ async function boot() {
   go('list');
   if (joined) toast('הצטרפת למשפחה ✓');
   if (!prefs.name) await askName();
-  window.__app = { state, addItem, parseReceipt, compareReceipt, handleBarcode, go }; // handy for tests/debugging
+  window.__app = { state, addItem, parseReceipt, compareReceipt, handleBarcode, go, handlePhotoFile, parseListFromImage, openPhotoReview }; // handy for tests/debugging
 }
 boot();

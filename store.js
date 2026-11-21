@@ -5,7 +5,7 @@
 // onData receives {items?, trips?, barcodes?}: each a map id -> object (the full collection).
 
 const COLLS = ['items', 'trips', 'barcodes'];
-const FB_VERSION = '10.14.1';
+const FB_VERSION = '13.4.0';
 const FB_BASE = `https://www.gstatic.com/firebasejs/${FB_VERSION}/`;
 const clean = (o) => JSON.parse(JSON.stringify(o));
 

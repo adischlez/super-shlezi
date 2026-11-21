@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Each family has its own space: /families/{familyCode}/{items|trips|barcodes}/{docId}
+    // The family code is a long random string (12 chars) that acts as the shared secret.
+    // Only signed-in (anonymous auth) clients can access it, and only if they know the code.
+    // The /families collection itself cannot be listed, so codes can't be enumerated.
+    match /families/{familyId}/{coll}/{docId} {
+      allow read, delete: if signedIn() && validFamily(familyId) && validColl(coll);
+      allow create, update: if signedIn() && validFamily(familyId) && validColl(coll)
+                            && request.resource.data.keys().size() < 40;
+    }
+
+    // Everything else is locked.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function signedIn() { return request.auth != null; }
+    function validFamily(id) { return id.size() >= 10 && id.size() <= 64; }
+    function validColl(c) { return c in ['items', 'trips', 'barcodes']; }
+  }
+}

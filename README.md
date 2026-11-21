@@ -32,6 +32,11 @@
 ```
 שורת הנחה: מחיר שלילי או המילה "הנחה".
 
+### סנכרון משפחתי
+האפליקציה כבר מחוברת לפרויקט Firebase **super-shlezi** (תוכנית Spark, בחינם). כל מי שפותח את https://adischlez.github.io/super-shlezi/ מצטרף אוטומטית למשפחת שלזי (קוד `shlezi-family`) ורואה את אותה רשימה בזמן אמת. אין צורך להדביק הגדרות בטלפון. כדי לפתוח רשימה נפרדת: הגדרות → משפחה חדשה, או הצטרפות בקוד.
+
+ההוראות הבאות נשמרות למקרה שצריך להקים פרויקט מחדש או לפרוס מחדש את הכללים (`npx firebase-tools deploy --only firestore --project super-shlezi` מתוך הריפו).
+
 ### הפעלת סנכרון משפחתי (Firebase) – חד פעמי, כ-10 דקות
 1. היכנסו ל-[console.firebase.google.com](https://console.firebase.google.com) → **Add project** (אפשר בלי Google Analytics).
 2. **Build → Firestore Database → Create database**. בחרו מיקום (למשל `europe-west1`) ו-**Production mode**.
@@ -56,6 +61,11 @@ A family PWA for a shared shopping list: Hebrew/RTL, mobile-first, installable, 
 **Features**: shared list grouped by supermarket department (quantity, who added, edit/delete with undo, auto department suggestion) · per-item "in cart" with progress · camera barcode scanning (BarcodeDetector, html5-qrcode fallback, manual entry, learned barcode→item mapping, Open Food Facts name lookup) · shopping trips (start a trip to snapshot the list; paste/enter receipt lines; fuzzy Hebrew matching into *matched / missing / extra on receipt* with totals; manual line assignment) · trip history · real-time family sync via Firebase Firestore with a localStorage fallback.
 
 **Receipt format**: one line per product `name | qty | price` (price = line total), optional `store:` / `date:` / `total` lines, or free text (`קוטג 5% ×5 35.00`), or JSON `{"store","date","total","lines":[{"name","qty","price","barcode"}]}`. Negative price or the word "הנחה" marks a discount line.
+
+### Family sync
+The live app is already connected to Firebase project **super-shlezi** (Spark / free tier). Anyone who opens https://adischlez.github.io/super-shlezi/ automatically joins the Schlesinger family (`shlezi-family`) and sees the shared list in real time. No per-phone setup. Use Settings → New family (or join by code) for a separate list.
+
+The steps below are kept in case the project needs to be recreated, or to redeploy rules: `npx firebase-tools deploy --only firestore --project super-shlezi`.
 
 ### Enabling family sync (Firebase), one-time, ~10 minutes
 1. [console.firebase.google.com](https://console.firebase.google.com) → **Add project** (Analytics not needed).

@@ -58,14 +58,16 @@ export async function createFirebaseBackend(config, code) {
   return {
     kind: 'firebase',
     async start(cb, onStatus) {
-      for (const c of COLLS) {
+      await Promise.all(COLLS.map((c) => new Promise((resolve, reject) => {
+        let first = true;
         unsubs.push(fs.onSnapshot(col(c), { includeMetadataChanges: true }, (snap) => {
           const m = {};
           snap.forEach(d => { m[d.id] = d.data(); });
           cb({ [c]: m });
           onStatus && onStatus({ state: snap.metadata.fromCache && !snap.metadata.hasPendingWrites ? 'cache' : 'online' });
-        }, (err) => onStatus && onStatus({ state: 'error', error: err })));
-      }
+          if (first) { first = false; resolve(); }
+        }, (err) => { onStatus && onStatus({ state: 'error', error: err }); if (first) reject(err); }));
+      })));
     },
     setItem: (o) => wrap(fs.setDoc(ref('items', o.id), clean(o))),
     delItem: (id) => wrap(fs.deleteDoc(ref('items', id))),

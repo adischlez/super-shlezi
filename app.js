@@ -1,5 +1,5 @@
 import { DEPARTMENTS, deptById, suggestDept, parseListText, parseReceipt, compareReceipt, nameScore, normalize, seedItems, RECEIPT_EXAMPLE } from './logic.js';
-import { createLocalBackend, createFirebaseBackend, parseFirebaseConfig, readLocal } from './store.js';
+import { createLocalBackend, createFirebaseBackend, parseFirebaseConfig, readLocal, localKey } from './store.js';
 
 // ---------------- helpers ----------------
 const $ = (s, r = document) => r.querySelector(s);
@@ -93,10 +93,13 @@ async function maybeSeedAndMigrate(backend) {
     for (const b of Object.values(local.barcodes)) backend.setBarcode(b);
     localStorage.setItem('ss:migrated:' + code, '1');
   }
-  if (!localStorage.getItem('ss:seeded:' + code)) {
+  // Seed Yaeli's list only when the family list is still empty. Deterministic
+  // ids (seed-1..N) mean a second write cannot create duplicates.
+  if (!Object.keys(state.items).length && !localStorage.getItem('ss:seeded:' + code)) {
     localStorage.setItem('ss:seeded:' + code, '1');
-    // deterministic ids (seed-1..N) so seeding twice can never duplicate
     for (const it of seedItems()) backend.setItem(it);
+  } else {
+    localStorage.setItem('ss:seeded:' + code, '1');
   }
 }
 window.addEventListener('ss-error', (e) => { state.sync = { state: 'error', error: e.detail }; updateChrome(); });
@@ -457,7 +460,7 @@ function renderSettings() {
       $('#jGo', s.el).onclick = async () => { const c = $('#jCode', s.el).value.trim().toLowerCase(); if (c.length < 10) return toast('הקוד חייב להכיל לפחות 10 תווים'); s.close(); await joinFamily(c); };
     });
   };
-  $('#newFamily').onclick = async () => { if (confirm('ליצור משפחה חדשה עם רשימה חדשה? (הנתונים הקיימים נשארים תחת הקוד הישן)')) { prefs.familyCode = randomCode(); savePrefs(); await startBackend(); render(); toast('נוצרה משפחה חדשה'); } };
+  $('#newFamily').onclick = async () => { if (confirm('ליצור משפחה חדשה עם רשימה חדשה? (הנתונים הקיימים נשארים תחת הקוד הישן)')) { prefs.familyCode = randomCode(); prefs.customFamily = true; savePrefs(); await startBackend(); render(); toast('נוצרה משפחה חדשה'); } };
   $('#fbSave').onclick = async () => {
     const c = parseFirebaseConfig($('#fbText').value);
     if (!c) return toast('לא זוהו הגדרות תקינות (חסר apiKey / projectId / appId)');
@@ -473,6 +476,7 @@ function renderSettings() {
 }
 async function joinFamily(code, cfg) {
   prefs.familyCode = code; if (cfg) prefs.fbConfig = cfg;
+  prefs.customFamily = code !== defaultFamily();
   localStorage.setItem('ss:seeded:' + code, '1'); // never seed a family we are joining
   savePrefs(); await startBackend(); go('list'); toast('הצטרפת למשפחה ✓');
 }
@@ -613,11 +617,34 @@ async function handleJoinHash() {
   if (code.length < 10) return false;
   if (code === prefs.familyCode) return false;
   localStorage.setItem('ss:seeded:' + code, '1');
-  prefs.familyCode = code; if (cfg && cfg.apiKey) prefs.fbConfig = cfg; savePrefs();
+  prefs.familyCode = code;
+  prefs.customFamily = code !== defaultFamily();
+  if (cfg && cfg.apiKey) prefs.fbConfig = cfg; savePrefs();
   return true;
 }
+function defaultFamily() { return window.DEFAULT_FAMILY_CODE || 'shlezi-family'; }
+function adoptDefaultFamily() {
+  if (prefs.customFamily) return;
+  const dest = defaultFamily();
+  const old = prefs.familyCode;
+  if (old && old !== dest) {
+    const from = readLocal(old), to = readLocal(dest);
+    let changed = false;
+    for (const col of ['items', 'trips', 'barcodes']) {
+      for (const [id, obj] of Object.entries(from[col] || {})) {
+        if (!to[col][id]) { to[col][id] = obj; changed = true; }
+      }
+    }
+    if (changed) {
+      try { localStorage.setItem(localKey(dest), JSON.stringify(to)); } catch {}
+    }
+  }
+  prefs.familyCode = dest;
+  savePrefs();
+}
 async function boot() {
-  if (!prefs.familyCode) { prefs.familyCode = randomCode(); savePrefs(); }
+  if (!prefs.customFamily) adoptDefaultFamily();
+  else if (!prefs.familyCode) { prefs.familyCode = defaultFamily(); savePrefs(); }
   const joined = await handleJoinHash();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   await startBackend();

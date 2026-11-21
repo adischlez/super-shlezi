@@ -141,3 +141,4 @@ pre{background:#f3f1ea;border-radius:10px;padding:10px;overflow:auto;direction:l
 .kv:first-of-type{border-top:0}
 code.code{direction:ltr;display:inline-block;background:#f3f1ea;padding:3px 8px;border-radius:8px;font-size:.9rem}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.toast[hidden],[hidden]{display:none!important}

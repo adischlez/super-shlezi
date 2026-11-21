@@ -1,4 +1,4 @@
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'super-shlezi-' + VERSION;
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'logic.js', 'store.js', 'config.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'vendor/html5-qrcode.min.js'];
 

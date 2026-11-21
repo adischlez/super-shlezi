@@ -1,6 +1,6 @@
 import { DEPARTMENTS, deptById, suggestDept, parseListText, parseReceipt, compareReceipt, nameScore, normalize, seedItems, RECEIPT_EXAMPLE } from './logic.js';
 import { createLocalBackend, createFirebaseBackend, parseFirebaseConfig, readLocal, localKey } from './store.js';
-import { parseListFromImage, downscaleImage, hebrewAiError, remainQuota, DAILY_LIMIT } from './photo.js';
+import { parseListFromImage, downscaleImage, hebrewAiError, remainQuota, DAILY_LIMIT, mergeItems, isAiUnavailable } from './photo.js';
 
 // ---------------- helpers ----------------
 const $ = (s, r = document) => r.querySelector(s);
@@ -45,7 +45,12 @@ function sheet(html, mount) {
   wrap.innerHTML = `<div class="sheet-backdrop"></div><div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
   const parent = $('#overlay');
   parent.appendChild(wrap);
-  const close = () => { wrap.remove(); api.onclose && api.onclose(); };
+  document.body.classList.add('sheet-open');
+  const close = () => {
+    wrap.remove();
+    if (!$('#overlay .sheet-wrap')) document.body.classList.remove('sheet-open');
+    api.onclose && api.onclose();
+  };
   const api = { el: wrap.querySelector('.sheet'), close, onclose: null };
   wrap.querySelector('.sheet-backdrop').onclick = close;
   wrap.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
@@ -216,14 +221,15 @@ function renderList() {
       <input id="addQty" type="number" inputmode="numeric" min="1" max="999" value="1" aria-label="כמות">
       <div class="full"><select id="addDept" aria-label="מחלקה">${deptOptions('other')}</select><button class="btn" type="submit">＋ הוסף</button></div>
     </form>
-    <div id="tripbar" class="tripbar"></div>
-    <div id="listBody"></div>
     <p class="photo-actions">
       <button class="btn ghost" type="button" id="photoBtn">📷 רשימה מתמונה</button>
       <button class="btn ghost" type="button" id="importBtn">ייבוא מטקסט</button>
     </p>
-    <input id="photoInput" type="file" accept="image/*" hidden>
-    <p class="muted" style="text-align:center;margin-top:0">צלמו דף כתוב בכתב יד, או בחרו תמונה מהגלריה</p>`;
+    <input id="photoInput" type="file" accept="image/*" multiple hidden>
+    <input id="photoInputCam" type="file" accept="image/*" capture="environment" hidden>
+    <p class="muted photo-hint">צילום במצלמה, או צילומי מסך מהגלריה — גם רשימות מוואטסאפ, מפתקים או ממתכון. אפשר לבחור כמה תמונות יחד.</p>
+    <div id="tripbar" class="tripbar"></div>
+    <div id="listBody"></div>`;
   let deptTouched = false;
   const nameEl = $('#addName'), deptEl = $('#addDept');
   nameEl.addEventListener('input', () => { if (!deptTouched) deptEl.value = suggestDept(nameEl.value); });
@@ -237,7 +243,9 @@ function renderList() {
   });
   $('#importBtn').onclick = openImport;
   $('#photoBtn').onclick = () => startPhotoImport();
-  $('#photoInput').onchange = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) handlePhotoFile(f); };
+  const onFiles = (e) => { const files = e.target.files ? [...e.target.files] : []; e.target.value = ''; if (files.length) handlePhotoFiles(files); };
+  $('#photoInput').onchange = onFiles;
+  $('#photoInputCam').onchange = onFiles;
   $('#listBody').addEventListener('click', onListClick);
   $('#listBody').addEventListener('change', (e) => {
     const li = e.target.closest('.item'); if (li && e.target.matches('input[type=checkbox]')) updateItem(li.dataset.id, { inCart: e.target.checked, cartBy: userName() });
@@ -311,32 +319,71 @@ function showPhotoFallback(title, body) {
 function startPhotoImport() {
   if (!fbConfig()) return showPhotoFallback('קריאת תמונה דורשת סנכרון משפחתי', 'הפעילו סנכרון משפחתי בהגדרות, או ' + fallbackHint());
   if (remainQuota() <= 0) return showPhotoFallback(...Object.values(hebrewAiError(null, 'quota')));
-  $('#photoInput').click();
+  sheet(`<h2>📷 רשימה מתמונה</h2>
+    <p class="muted">צלמו דף, או בחרו מהגלריה תמונה או צילומי מסך (גם רשימות מוואטסאפ, מפתקים או ממרכיבי מתכון). אפשר לבחור כמה תמונות יחד.</p>
+    <div class="actions col"><button class="btn" id="pickCam">📸 צילום במצלמה</button>
+      <button class="btn" id="pickGal">🖼️ בחירה מהגלריה (אפשר כמה)</button>
+      <button class="btn gray" data-close>ביטול</button></div>`, (s) => {
+    // Keep this in the same click turn so iOS allows the file picker.
+    $('#pickCam', s.el).onclick = () => { s.close(); $('#photoInputCam').click(); };
+    $('#pickGal', s.el).onclick = () => { s.close(); $('#photoInput').click(); };
+  });
 }
-async function handlePhotoFile(file) {
-  if (!file || !String(file.type || '').startsWith('image/')) return toast('בחרו קובץ תמונה');
+async function handlePhotoFile(file) { return handlePhotoFiles(file ? [file] : []); }
+async function handlePhotoFiles(fileList) {
+  const files = [...(fileList || [])].filter(f => !f.type || String(f.type).startsWith('image/'));
+  if (!files.length) return toast('בחרו קובץ תמונה');
+  if (remainQuota() <= 0) return showPhotoFallback(...Object.values(hebrewAiError(null, 'quota')));
   const loading = sheet(`<h2>קוראים את הרשימה…</h2>
-    <div class="photo-loading"><span class="spinner" aria-hidden="true"></span><p class="muted">מפענחים את כתב היד. זה יכול לקחת כמה שניות.</p></div>
+    <div class="photo-loading"><span class="spinner" aria-hidden="true"></span><p class="muted" id="photoLoadMsg">מפענחים את התמונה. זה יכול לקחת כמה שניות.</p></div>
     <p class="muted" id="photoLoadHint"></p>`, () => {});
-  // no backdrop-close during load
   loading.el.parentElement.querySelector('.sheet-backdrop').onclick = null;
-  let previewUrl = '';
+  const previewUrls = [];
+  const collected = [];
+  let modelUsed = '', fatal = null, skippedQuota = 0, failed = 0;
   try {
-    const scaled = await downscaleImage(file);
-    previewUrl = scaled.url;
-    const res = await parseListFromImage(scaled.file, fbConfig());
+    for (let i = 0; i < files.length; i++) {
+      const msg = $('#photoLoadMsg', loading.el);
+      if (msg) msg.textContent = files.length > 1 ? `מפענחים תמונה ${i + 1} מתוך ${files.length}…` : 'מפענחים את התמונה. זה יכול לקחת כמה שניות.';
+      if (remainQuota() <= 0) { skippedQuota += files.length - i; break; }
+      try {
+        const scaled = await downscaleImage(files[i]);
+        previewUrls.push(scaled.url);
+        const res = await parseListFromImage(scaled.file, fbConfig());
+        collected.push(...res.items);
+        modelUsed = res.model || modelUsed;
+      } catch (err) {
+        console.error('photo import', err);
+        if (err && err.code === 'quota') { skippedQuota += files.length - i; break; }
+        if (isAiUnavailable(err)) { fatal = err; break; }
+        failed++;
+      }
+    }
+  } finally {
     loading.close();
-    if (!res.items.length) return showPhotoFallback('לא זיהינו מוצרים בתמונה', 'נסו לצלם שוב באור טוב, או ' + fallbackHint());
-    openPhotoReview(res.items, previewUrl, res.model);
-  } catch (err) {
-    console.error('photo import', err);
-    loading.close();
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    const msg = hebrewAiError(err, err && err.code === 'quota' ? 'quota' : '');
-    showPhotoFallback(msg.title, msg.body);
   }
+  const merged = mergeItems(collected);
+  if (merged.length) {
+    const notes = [];
+    if (fatal) notes.push('חלק מהתמונות לא פוענחו (השירות לא היה זמין).');
+    if (skippedQuota) notes.push(`${skippedQuota} תמונות דולגו כי הגעתם למכסה היומית.`);
+    if (failed && !fatal) notes.push(`${failed} תמונות לא פוענחו.`);
+    openPhotoReview(merged, previewUrls, modelUsed, notes.join(' '));
+    return;
+  }
+  previewUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+  if (fatal) {
+    const msg = hebrewAiError(fatal);
+    return showPhotoFallback(msg.title, msg.body);
+  }
+  if (skippedQuota && !collected.length) return showPhotoFallback(...Object.values(hebrewAiError(null, 'quota')));
+  showPhotoFallback('לא זיהינו מוצרים בתמונה', 'נסו לצלם שוב באור טוב, לבחור צילום מסך ברור יותר, או ' + fallbackHint());
 }
-function openPhotoReview(items, previewUrl, modelUsed) {
+function openPhotoReview(items, previewUrl, modelUsed, extraNote) {
+  const urls = (Array.isArray(previewUrl) ? previewUrl : (previewUrl ? [previewUrl] : [])).filter(Boolean);
+  const thumbs = urls.length
+    ? `<div class="photo-thumbs">${urls.map(u => `<img class="photo-thumb" src="${u}" alt="התמונה שנבחרה">`).join('')}</div>`
+    : '';
   const rows = items.map((it, i) => `
     <li class="preview-item ${it.unclear ? 'unclear' : ''}" data-i="${i}">
       <label class="chk"><input type="checkbox" ${it.selected ? 'checked' : ''} aria-label="הוסף את ${esc(it.name)}"><span class="box">✓</span></label>
@@ -350,11 +397,11 @@ function openPhotoReview(items, previewUrl, modelUsed) {
       </div>
     </li>`).join('');
   const sh = sheet(`<h2>בדיקה לפני הוספה</h2>
-    ${previewUrl ? `<img class="photo-thumb" src="${previewUrl}" alt="התמונה שצולמה">` : ''}
-    <p class="muted">סמנו מה להוסיף, ותקנו שם או כמות אם צריך. ${items.filter(i => i.unclear).length ? 'פריטים מסומנים בצהוב לא היו ברורים לגמרי.' : ''}</p>
+    ${thumbs}
+    <p class="muted">סמנו מה להוסיף, ותקנו שם או כמות אם צריך. ${items.filter(i => i.unclear).length ? 'פריטים מסומנים בצהוב לא היו ברורים לגמרי.' : ''}${extraNote ? ' ' + esc(extraNote) : ''}</p>
     <ul class="preview-list">${rows}</ul>
     <div class="actions"><button class="btn gray" data-close>ביטול</button><button class="btn" id="photoAdd">הוספה לרשימה</button></div>`, (s) => {
-    s.onclose = () => { if (previewUrl) URL.revokeObjectURL(previewUrl); };
+    s.onclose = () => { urls.forEach(u => { try { URL.revokeObjectURL(u); } catch {} }); };
     $('#photoAdd', s.el).onclick = () => {
       const chosen = [...s.el.querySelectorAll('.preview-item')].filter(li => li.querySelector('input[type=checkbox]').checked).map(li => ({
         name: li.querySelector('.p-name').value.trim(),
@@ -734,6 +781,6 @@ async function boot() {
   go('list');
   if (joined) toast('הצטרפת למשפחה ✓');
   if (!prefs.name) await askName();
-  window.__app = { state, addItem, parseReceipt, compareReceipt, handleBarcode, go, handlePhotoFile, parseListFromImage, openPhotoReview }; // handy for tests/debugging
+  window.__app = { state, addItem, parseReceipt, compareReceipt, handleBarcode, go, handlePhotoFile, handlePhotoFiles, parseListFromImage, openPhotoReview, startPhotoImport }; // handy for tests/debugging
 }
 boot();

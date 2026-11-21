@@ -3,7 +3,7 @@
 // https://firebase.google.com/docs/ai-logic/analyze-images
 // https://firebase.google.com/docs/ai-logic/generate-structured-output
 
-import { DEPARTMENTS, suggestDept } from './logic.js';
+import { DEPARTMENTS, suggestDept, normalize } from './logic.js';
 
 export const AI_MODELS = ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-flash-latest'];
 export const DAILY_LIMIT = 10;
@@ -26,7 +26,7 @@ function bumpQuota() {
 }
 
 export function hebrewAiError(err, fallbackKind) {
-  if (fallbackKind === 'quota') return { title: 'הגעתם למכסה היומית', body: `אפשר לצלם עד ${DAILY_LIMIT} רשימות ביום מכל טלפון (המפתח של האפליקציה פומבי, לכן יש הגבלה). אפשר לייבא את הרשימה כטקסט, או לשלוח את התמונה לקבוצת הוואטסאפ ״סופר שלזי״ והעוזר המשפחתי יתמלל אותה.` };
+  if (fallbackKind === 'quota') return { title: 'הגעתם למכסה היומית', body: `אפשר לפענח עד ${DAILY_LIMIT} תמונות ביום מכל טלפון (המפתח של האפליקציה פומבי, לכן יש הגבלה). אפשר לייבא את הרשימה כטקסט, או לשלוח את התמונות לקבוצת הוואטסאפ ״סופר שלזי״ והעוזר המשפחתי יתמלל אותן.` };
   const raw = [err?.code, err?.message, err].filter(Boolean).join(' ');
   const low = raw.toLowerCase();
   if (/quota|resource.?exhausted|429|rate.?limit|too many/i.test(low))
@@ -110,17 +110,21 @@ function listSchema(Schema) {
 
 export function buildPrompt() {
   const depts = DEPARTMENTS.map(d => `${d.id} = ${d.name}`).join('\n');
-  return `אתה עוזר שמפענח רשימת קניות בעברית שנכתבה בכתב יד (או הודפסה) על דף או פתק.
+  return `אתה עוזר שמחלץ מוצרי מכולת/סופר מרשימה או ממתכון שבתמונה.
 
-החזר JSON בלבד לפי הסכמה. כל שורה ברשימה היא מוצר.
+התמונה יכולה להיות: דף או פתק בכתב יד; צילום מסך (וואטסאפ, Notes, מתכון, אתר, הודעה); או רשימה מודפסת/מוקלדת. עברית, אנגלית, או מעורב. אל תמציא מוצרים.
+
+החזר JSON בלבד לפי הסכמה.
 כללים:
-- name: שם המוצר בעברית, בלי כמות ובלי מחיר. תקן שגיאות כתיב ברורות, אבל אל תמציא מוצרים.
-- qty: הכמות (מספר). אם לא צוינה כמות, השתמש ב-1. "קוטג׳ ×5" או "5 קוטג׳" = qty 5, name "קוטג׳".
+- name: שם המוצר, בלי כמות ובלי מחיר. תקן שגיאות כתיב ברורות. אם השם כתוב באנגלית, השאר באנגלית (אלא אם זו שגיאת כתיב ברורה).
+- qty: הכמות (מספר). אם לא צוינה כמות, השתמש ב-1. "קוטג׳ ×5" או "5 קוטג׳" או "milk x2" = qty המתאים והשם בלי המספר.
 - dept: מחלקה מהרשימה למטה בלבד.
-- אם שורה מחוקה / עם קו חוצה / מסומנת כקנויה — דלג עליה לגמרי.
+- אם שורה מחוקה / עם קו חוצה / מסומנת כקנויה או עם וי — דלג עליה לגמרי.
 - אם מילה לא ברורה: בכל זאת נחש מה הכי סביר, סמן unclear=true, וכתוב ב-note את מה שנראה בתמונה.
-- התעלם מכותרות, תאריכים, ציורים, ומלל שאינו מוצר.
-- אם אין בכלל רשימת קניות, החזר items ריק.
+- התעלם לגמרי מאלמנטים של ממשק: שעת שעון, סוללה, אות, שמות שולחים, תאריכי הודעות, כפתורים, מקלדת, סרגלי ניווט, "נמסר"/"נקרא"/✓, לוגו, פרסומות, רקע של הצ'אט.
+- ממתכון: חלץ רק את מרכיבי הקניות, לא הוראות הכנה, זמנים או מספר מנות.
+- התעלם מכותרות כלליות (כמו "קניות", "רשימה", "ingredients") שאינן מוצר.
+- אם אין בכלל רשימת קניות או מרכיבים, החזר items ריק.
 
 מחלקות:
 ${depts}`;
@@ -139,6 +143,33 @@ export function normalizeParsed(raw) {
     out.push({ name, qty, dept, unclear: !!it.unclear, note: String(it.note || '').trim(), selected: true });
   }
   return out;
+}
+
+/** Merge items from several photos: same name (normalized) is one row, quantities are summed. */
+export function mergeItems(items) {
+  const map = new Map();
+  for (const it of items || []) {
+    const key = normalize(it.name);
+    if (!key) continue;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, { ...it, name: String(it.name).replace(/\s+/g, ' ').trim(), qty: it.qty || 1, selected: it.selected !== false, note: it.note || '', unclear: !!it.unclear });
+      continue;
+    }
+    prev.qty = Math.min(999, (prev.qty || 1) + (it.qty || 1));
+    prev.unclear = prev.unclear || !!it.unclear;
+    if (it.note && !prev.note.includes(it.note)) prev.note = [prev.note, it.note].filter(Boolean).join(' · ');
+    if (prev.dept === 'other' && it.dept && it.dept !== 'other') prev.dept = it.dept;
+    if (it.selected === false && prev.selected) { /* keep selected if any copy was kept */ }
+  }
+  return [...map.values()];
+}
+
+export function isAiUnavailable(err) {
+  if (!err) return false;
+  if (err.code === 'quota') return false;
+  const raw = [err.code, err.message, err].filter(Boolean).join(' ');
+  return /permission|denied|403|failed.?precondition|api.+not.+enabled|tos|terms of service|billing|config not found|genai config/i.test(raw);
 }
 
 let _mods, _app;

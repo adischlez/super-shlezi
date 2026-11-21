@@ -27,7 +27,7 @@ function bumpQuota() {
 
 export function hebrewAiError(err, fallbackKind) {
   if (fallbackKind === 'quota') return { title: 'הגעתם למכסה היומית', body: `אפשר לצלם עד ${DAILY_LIMIT} רשימות ביום מכל טלפון (המפתח של האפליקציה פומבי, לכן יש הגבלה). אפשר לייבא את הרשימה כטקסט, או לשלוח את התמונה לקבוצת הוואטסאפ ״סופר שלזי״ והעוזר המשפחתי יתמלל אותה.` };
-  const raw = String(err?.code || err?.message || err || '');
+  const raw = [err?.code, err?.message, err].filter(Boolean).join(' ');
   const low = raw.toLowerCase();
   if (/quota|resource.?exhausted|429|rate.?limit|too many/i.test(low))
     return { title: 'השירות עמוס כרגע', body: 'נסו שוב בעוד כמה דקות, או ייבאו את הרשימה כטקסט. אפשר גם לשלוח את התמונה לקבוצת הוואטסאפ ״סופר שלזי״.' };
